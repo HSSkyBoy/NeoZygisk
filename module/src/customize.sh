@@ -24,20 +24,48 @@ if [ "$BOOTMODE" ] && [ "$APATCH" ]; then
   fi
 elif [ "$BOOTMODE" ] && [ "$KSU" ]; then
   ui_print "- Installing from KernelSU app"
-  ui_print "- KernelSU version: $KSU_KERNEL_VER_CODE (kernel) + $KSU_VER_CODE (ksud)"
-  if ! [ "$KSU_KERNEL_VER_CODE" ] || [ "$KSU_KERNEL_VER_CODE" -lt "$MIN_KSU_VERSION" ]; then
-    ui_print "*********************************************************"
-    ui_print "! KernelSU version is too old!"
-    ui_print "! Please update KernelSU to latest version"
-    abort    "*********************************************************"
-  elif [ "$KSU_KERNEL_VER_CODE" -ge "$MAX_KSU_VERSION" ]; then
-    ui_print "*********************************************************"
-    ui_print "! KernelSU version abnormal!"
-    ui_print "! Please integrate KernelSU into your kernel"
-    ui_print "  as submodule instead of copying the source code"
-    abort    "*********************************************************"
+  KSU_VER="$KSU_KERNEL_VER_CODE"
+  KSU_MGR_VER="$KSU_VER_CODE"
+  if [ -z "$KSU_VER" ]; then
+    ui_print "- KSU kernel version env var not found. Trying ioctl fallback..."
+    case "$ARCH" in
+      "arm64") KSU_TOOL_FILE="get_ksu_ver-arm64" ;;
+      "arm")   KSU_TOOL_FILE="get_ksu_ver-arm" ;;
+      "x64")   KSU_TOOL_FILE="get_ksu_ver-x64" ;;
+      "x86")   KSU_TOOL_FILE="get_ksu_ver-x86" ;;
+      *)       KSU_TOOL_FILE="" ;;
+    esac
+    KSU_TOOL_PATH="$TMPDIR/$KSU_TOOL_FILE"
+    if [ -n "$KSU_TOOL_FILE" ] && unzip -o "$ZIPFILE" "$KSU_TOOL_FILE" -d "$TMPDIR" >&2; then
+      set_perm "$KSU_TOOL_PATH" 0 0 0755
+      KSU_VER=$("$KSU_TOOL_PATH")
+      ui_print "- KSU kernel version via ioctl: $KSU_VER"
+    else
+      ui_print "! Warning: KSU ioctl tool not found for $ARCH ($KSU_TOOL_FILE)."
+    fi
   fi
-  if ! [ "$KSU_VER_CODE" ] || [ "$KSU_VER_CODE" -lt "$MIN_KSUD_VERSION" ]; then
+  ui_print "- KernelSU version: $KSU_VER (kernel) + $KSU_MGR_VER (ksud)"
+  if [ -z "$KSU_VER" ]; then
+    ui_print "*********************************************************"
+    ui_print "! KernelSU kernel version info is missing!"
+    abort    "*********************************************************"
+  elif [ "$KSU_VER" = "0" ]; then
+    ui_print "! Warning: Could not detect KernelSU kernel version (KSU_VER=0)."
+    ui_print "- Proceeding to check ksud (manager) version only."
+  else
+    if [ "$KSU_VER" -lt "$MIN_KSU_VERSION" ]; then
+      ui_print "*********************************************************"
+      ui_print "! KernelSU version is too old! ($KSU_VER < $MIN_KSU_VERSION)"
+      abort    "*********************************************************"
+    elif [ "$KSU_VER" -ge "$MAX_KSU_VERSION" ]; then
+      ui_print "*********************************************************"
+      ui_print "! KernelSU version abnormal!"
+      ui_print "! Please integrate KernelSU into your kernel"
+      ui_print "  as submodule instead of copying the source code"
+      abort    "*********************************************************"
+    fi
+  fi
+  if ! [ "$KSU_MGR_VER" ] || [ "$KSU_MGR_VER" -lt "$MIN_KSUD_VERSION" ]; then
     ui_print "*********************************************************"
     ui_print "! ksud version is too old!"
     ui_print "! Please update KernelSU Manager to latest version"
@@ -119,35 +147,49 @@ mkdir "$MODPATH/lib"
 mkdir "$MODPATH/lib64"
 mv "$MODPATH/zygisk-ctl.sh" "$MODPATH/bin/zygisk-ctl"
 
-if [ "$ARCH" = "x86" ]; then
-  ui_print "- Extracting x86 libraries"
-  extract "$ZIPFILE" 'bin/x86/zygiskd' "$MODPATH/bin" true
-  mv "$MODPATH/bin/zygiskd" "$MODPATH/bin/zygiskd32"
-  extract "$ZIPFILE" 'lib/x86/libzygisk.so' "$MODPATH/lib" true
-  extract "$ZIPFILE" 'lib/x86/libzygisk_ptrace.so' "$MODPATH/bin" true
-  mv "$MODPATH/bin/libzygisk_ptrace.so" "$MODPATH/bin/zygisk-ptrace32"
-elif [ "$ARCH" = "x64" ]; then
-  ui_print "- Extracting x64 libraries"
-  extract "$ZIPFILE" 'bin/x86_64/zygiskd' "$MODPATH/bin" true
-  mv "$MODPATH/bin/zygiskd" "$MODPATH/bin/zygiskd64"
-  extract "$ZIPFILE" 'lib/x86_64/libzygisk.so' "$MODPATH/lib64" true
-  extract "$ZIPFILE" 'lib/x86_64/libzygisk_ptrace.so' "$MODPATH/bin" true
-  mv "$MODPATH/bin/libzygisk_ptrace.so" "$MODPATH/bin/zygisk-ptrace64"
-elif [ "$ARCH" = "arm" ]; then
-  ui_print "- Extracting arm libraries"
-  extract "$ZIPFILE" 'bin/armeabi-v7a/zygiskd' "$MODPATH/bin" true
-  mv "$MODPATH/bin/zygiskd" "$MODPATH/bin/zygiskd32"
-  extract "$ZIPFILE" 'lib/armeabi-v7a/libzygisk.so' "$MODPATH/lib" true
-  extract "$ZIPFILE" 'lib/armeabi-v7a/libzygisk_ptrace.so' "$MODPATH/bin" true
-  mv "$MODPATH/bin/libzygisk_ptrace.so" "$MODPATH/bin/zygisk-ptrace32"
-elif [ "$ARCH" = "arm64" ]; then
-  ui_print "- Extracting arm64 libraries"
-  extract "$ZIPFILE" 'bin/arm64-v8a/zygiskd' "$MODPATH/bin" true
-  mv "$MODPATH/bin/zygiskd" "$MODPATH/bin/zygiskd64"
-  extract "$ZIPFILE" 'lib/arm64-v8a/libzygisk.so' "$MODPATH/lib64" true
-  extract "$ZIPFILE" 'lib/arm64-v8a/libzygisk_ptrace.so' "$MODPATH/bin" true
-  mv "$MODPATH/bin/libzygisk_ptrace.so" "$MODPATH/bin/zygisk-ptrace64"
-fi
+case "$ARCH" in
+  "arm64")
+    BIN_ARCH_PATH="bin/arm64-v8a"
+    LIB_ARCH_PATH="lib/arm64-v8a"
+    LIB_TARGET_DIR="$MODPATH/lib64"
+    ZYGISKD_TARGET_NAME="zygiskd64"
+    PTRACE_TARGET_NAME="zygisk-ptrace64"
+    ;;
+  "arm")
+    BIN_ARCH_PATH="bin/armeabi-v7a"
+    LIB_ARCH_PATH="lib/armeabi-v7a"
+    LIB_TARGET_DIR="$MODPATH/lib"
+    ZYGISKD_TARGET_NAME="zygiskd32"
+    PTRACE_TARGET_NAME="zygisk-ptrace32"
+    ;;
+  "x64")
+    BIN_ARCH_PATH="bin/x86_64"
+    LIB_ARCH_PATH="lib/x86_64"
+    LIB_TARGET_DIR="$MODPATH/lib64"
+    ZYGISKD_TARGET_NAME="zygiskd64"
+    PTRACE_TARGET_NAME="zygisk-ptrace64"
+    ;;
+  "x86")
+    BIN_ARCH_PATH="bin/x86"
+    LIB_ARCH_PATH="lib/x86"
+    LIB_TARGET_DIR="$MODPATH/lib"
+    ZYGISKD_TARGET_NAME="zygiskd32"
+    PTRACE_TARGET_NAME="zygisk-ptrace32"
+    ;;
+  *)
+    abort "! Should not happen: Unknown ARCH $ARCH"
+    ;;
+esac
+
+ui_print "- Extracting $ARCH libraries"
+
+extract "$ZIPFILE" "$BIN_ARCH_PATH/zygiskd" "$MODPATH/bin" true
+mv "$MODPATH/bin/zygiskd" "$MODPATH/bin/$ZYGISKD_TARGET_NAME"
+
+extract "$ZIPFILE" "$LIB_ARCH_PATH/libzygisk.so" "$LIB_TARGET_DIR" true
+
+extract "$ZIPFILE" "$LIB_ARCH_PATH/libzygisk_ptrace.so" "$MODPATH/bin" true
+mv "$MODPATH/bin/libzygisk_ptrace.so" "$MODPATH/bin/$PTRACE_TARGET_NAME"
 
 ui_print "- Setting permissions"
 set_perm_recursive "$MODPATH/bin" 0 0 0755 0755

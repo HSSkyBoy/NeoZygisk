@@ -91,9 +91,16 @@ HookContext *g_hook;
     ret new_##func(__VA_ARGS__)
 
 DCL_HOOK_FUNC(static char *, strdup, const char *str) {
-    if (strcmp(kZygoteInit, str) == 0) {
-        g_hook->hook_zygote_jni();
-        g_hook->cached_map_infos = lsplt::MapInfo::Scan();
+
+    static bool zygote_hooked = false;
+
+    if (!zygote_hooked && str != nullptr) {
+        if (*str == 'c' && strcmp(kZygoteInit, str) == 0) {
+            g_hook->hook_zygote_jni();
+            g_hook->cached_map_infos = lsplt::MapInfo::Scan();
+            
+            zygote_hooked = true;
+        }
     }
     return old_strdup(str);
 }
@@ -121,21 +128,27 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
 }
 
 DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *default_value) {
-    if (!g_hook->skip_hooking_unloader) {
-        g_hook->hook_unloader();
-        g_hook->skip_hooking_unloader = true;
-        for (auto it = g_hook->plt_backup.rbegin(); it != g_hook->plt_backup.rend(); ++it) {
-            const auto &[dev, inode, sym, old_func] = *it;
-            if (*old_func == old_property_get) {
-                if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
-                    !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
-                    PLOGE("unhook property_get");
-                } else {
-                    // A reverse_iterator must be converted to a forward iterator.
-                    // The `base()` of the *next* iterator gives the correct position.
-                    g_hook->plt_backup.erase(std::next(it).base());
+
+    static bool unloader_triggered = false;
+
+    if (!unloader_triggered) {
+        unloader_triggered = true;
+
+        if (!g_hook->skip_hooking_unloader) {
+            g_hook->hook_unloader();
+            g_hook->skip_hooking_unloader = true;
+
+            for (auto it = g_hook->plt_backup.rbegin(); it != g_hook->plt_backup.rend(); ++it) {
+                const auto &[dev, inode, sym, old_func] = *it;
+                if (*old_func == old_property_get) {
+                    if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
+                        !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
+                        PLOGE("unhook property_get");
+                    } else {
+                        g_hook->plt_backup.erase(std::next(it).base());
+                    }
+                    break;
                 }
-                break;
             }
         }
     }

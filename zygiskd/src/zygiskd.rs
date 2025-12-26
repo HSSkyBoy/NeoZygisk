@@ -30,6 +30,8 @@ use std::{
     thread,
 };
 
+use ksusig::{Module as KsuModule, SignatureVerifier};
+
 /// Represents a loaded Zygisk module.
 struct Module {
     name: String,
@@ -210,6 +212,34 @@ fn get_arch() -> Result<&'static str> {
     }
 }
 
+fn verify_artifact_signature(path: &Path) -> bool {
+    let module_result = KsuModule::new(path.to_path_buf());
+
+    match module_result {
+        Ok(ksu_module) => {
+            if let Ok(signing_block) = ksu_module.get_signing_block() {
+                let verifier = SignatureVerifier::with_builtin_roots();
+                match verifier.verify_v2(&signing_block) {
+                    Ok(result) => {
+                        return result.signature_valid && result.is_trusted;
+                    }
+                    Err(e) => {
+                        debug!("Failed to verify v2 signature: {:?}", e);
+                        return false;
+                    }
+                }
+            } else {
+                debug!("No signing block found in {}", path.display());
+                return false;
+            }
+        },
+        Err(e) => {
+            debug!("Failed to parse file for signature verification: {:?}", e);
+            return false;
+        }
+    }
+}
+
 /// Scans the module directory, loads valid modules, and creates memfds for their libraries.
 fn load_modules() -> Result<Vec<Module>> {
     let arch = get_arch()?;
@@ -231,6 +261,12 @@ fn load_modules() -> Result<Vec<Module>> {
 
         if !so_path.exists() || disabled_flag.exists() {
             continue;
+        }
+
+        if verify_artifact_signature(&so_path) {
+            info!("Module `{}`: Signature verified successfully [TRUSTED]", name);
+        } else {
+            warn!("Module `{}`: Signature missing or untrusted [UNTRUSTED]", name);
         }
 
         info!("Loading module `{}`...", name);

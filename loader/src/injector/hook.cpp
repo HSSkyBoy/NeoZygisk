@@ -12,8 +12,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <random>
 #include <iomanip>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <lsplt.hpp>
 
@@ -41,15 +42,21 @@ static string trim(const string& str) {
     size_t last = str.find_last_not_of(" \t\r\n");
     return str.substr(first, (last - first + 1));
 }
-static std::string generate_random_hex(int length) {
-    std::string str;
-    str.reserve(length);
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 15);
-    const char *digits = "0123456789abcdef";
-    for (int i = 0; i < length; ++i) {
-        str.push_back(digits[dis(gen)]);
+
+static string generate_random_hex(int len) {
+    string str(len, 0);
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        int read_len = len / 2;
+        vector<unsigned char> buffer(read_len);
+        if (read(fd, buffer.data(), read_len) == read_len) {
+            const char* digits = "0123456789abcdef";
+            for (int i = 0; i < read_len; ++i) {
+                str[i * 2]     = digits[buffer[i] >> 4];
+                str[i * 2 + 1] = digits[buffer[i] & 0x0F];
+            }
+        }
+        close(fd);
     }
     return str;
 }
@@ -57,7 +64,6 @@ static std::string generate_random_hex(int length) {
 void InitRandomVbmeta() {
     // 生成 64 hex characters 的隨機值
     std::string fake_digest = generate_random_hex(64);
-
     g_spoof_props.push_back({"ro.boot.vbmeta.digest", fake_digest});
 }
 
@@ -151,6 +157,8 @@ constexpr const char *kZygote = "com/android/internal/os/Zygote";
 ZygiskContext *g_ctx;
 HookContext *g_hook;
 
+static ino_t g_art_inode = 0;
+static dev_t g_art_dev = 0;
 // -----------------------------------------------------------------
 
 #define DCL_HOOK_FUNC(ret, func, ...)                                                              \

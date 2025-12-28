@@ -7,9 +7,6 @@ if [ "$ZYGISK_ENABLED" ]; then
   exit 0
 fi
 
-# Handle prop.sh in background
-sh "$MODDIR/prop.sh" &
-
 cd "$MODDIR"
 
 if [ "$(which magisk)" ]; then

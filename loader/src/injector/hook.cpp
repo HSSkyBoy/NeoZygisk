@@ -4,8 +4,16 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <unwind.h>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <random>
+#include <iomanip>
 
 #include <lsplt.hpp>
 
@@ -18,6 +26,65 @@ using namespace std;
 
 // *********************
 // Zygisk Bootstrapping
+const char *moduleId = "zygisksu";
+
+struct Property {
+    string key;
+    string value;
+};
+
+vector<Property> g_spoof_props;
+
+static string trim(const string& str) {
+    size_t first = str.find_first_not_of(" \t\r\n");
+    if (string::npos == first) return str;
+    size_t last = str.find_last_not_of(" \t\r\n");
+    return str.substr(first, (last - first + 1));
+}
+static std::string generate_random_hex(int length) {
+    std::string str;
+    str.reserve(length);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+    const char *digits = "0123456789abcdef";
+    for (int i = 0; i < length; ++i) {
+        str.push_back(digits[dis(gen)]);
+    }
+    return str;
+}
+
+void InitRandomVbmeta() {
+    // 生成 64 hex characters 的隨機值
+    std::string fake_digest = generate_random_hex(64);
+
+    g_spoof_props.push_back({"ro.boot.vbmeta.digest", fake_digest});
+}
+
+void LoadPropConfig() {
+    string config_path = string("/data/adb/modules/") + moduleId + "/spoof.prop";
+    chmod(config_path.c_str(), 0744);
+    ifstream file(config_path);
+
+    if (!file.is_open()) {
+        return;
+    }
+    string line;
+    while (getline(file, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+
+        istringstream is_line(line);
+        string key;
+        if (getline(is_line, key, '=')) {
+            string value;
+            if (getline(is_line, value)) {
+                g_spoof_props.push_back({trim(key), trim(value)});
+            }
+        }
+    }
+}
+
 // *********************
 //
 // Zygisk's lifecycle is driven by several PLT function hooks in libandroid_runtime, libart, and
@@ -128,6 +195,19 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
 }
 
 DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *default_value) {
+
+    if (key && !g_spoof_props.empty()) {
+        for (const auto &prop : g_spoof_props) {
+            if (prop.key == key) {
+                int len = prop.value.length();
+                if (value) {
+                    strncpy(value, prop.value.c_str(), len);
+                    value[len] = '\0';
+                }
+                return len;
+            }
+        }
+    }
 
     static bool unloader_triggered = false;
 
@@ -420,6 +500,9 @@ void HookContext::restore_zygote_hook(JNIEnv *env) {
 // -----------------------------------------------------------------
 
 void hook_entry(void *start_addr, size_t block_size) {
+    LoadPropConfig();
+    InitRandomVbmeta();
+
     g_hook = new HookContext(start_addr, block_size);
     g_hook->hook_plt();
     clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0, true);

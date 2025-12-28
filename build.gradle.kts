@@ -29,7 +29,7 @@ val minKsudVersion by extra(11425)
 val maxKsuVersion by extra(50000)
 val minMagiskVersion by extra(26402)
 val workDirectory by extra("/data/adb/neozygisk")
-val updateJson by extra("https://raw.githubusercontent.com/JingMatrix/NeoZygisk/master/module/zygisk.json")
+val updateJson by extra("https://raw.githubusercontent.com/HSSkyBoy/NeoZygisk/master/module/zygisk.json")
 
 val androidMinSdkVersion by extra(26)
 val androidTargetSdkVersion by extra(36)

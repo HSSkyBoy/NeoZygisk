@@ -1,12 +1,20 @@
-## 🚀 v2.2 - Bug Fixes and Enhanced Compatibility 🚀
+# NeoZygisk v2.3
+This version focuses on enhancing the stealth capabilities for **APatch** and **KernelSU**, and fixes potential crashes and memory leaks in the core hooking mechanism.
 
-This release squashes several bugs introduced in the v2.0 refactoring and streamlines performance.
+### 🛡️ Stealth Mechanism Upgrades
+*   **Enhanced APatch and KSU Stealth**
+    *   Reconstructed the unmount (Unmount) logic, now able to more accurately identify and handle the module mounting sources (Loop Device) of **APatch** and KernelSU.
+*   **Hide Bootloader Properties**
+    *   Added logic to hide or spoof sensitive Bootloader properties
+*   **Optimized Raw Code Hiding**
+    *   Improved the `hide_map` mechanism to ensure that the injected raw code (Raw Code) is properly hidden and cleaned up in memory mapping, reducing the risk of being detected by anti-cheat systems.
 
-### 🐛 Bug Fixes
+### 🐛 Bug Fixes & Stability
+*   **Fix Memory Leak**
+    *   Fixed a leak issue caused by incorrect release of old memory regions (`munmap`) when performing the hidden operation of memory remapping (Remap).
+*   **Fix Invalid Address Access**
+    *   Fixed a potential illegal memory access (Segmentation Fault) during the PLT (Procedure Linkage Table) Hook process if the backup data is invalid or has a length of 0, improving the stability of the Zygote process.
 
-*   **LSPosed Compatibility**: The `Zygisk` daemon now correctly cleans up all traces of LSPosed mounts. This regression was addressed in the hot-fix release v2.1.
-*   **Corrected Mount Logic**: Overhauled the logic for determining an application's mount namespace. This fixes a critical bug where system apps installed as modules (e.g., Basic Call Recorder) would fail to launch.
-
-### 💥 Breaking Change
-
-*   **Dropping 32-bit Support on 64-bit Devices** 🚮: To simplify the code and improve stability, NeoZygisk will no longer inject into 32-bit-only applications running on 64-bit devices. This change helps resolve compatibility issues on Android 10 and reflects the rarity of modern 32-bit-only apps.
+### ⚡ Other Changes (Misc)
+*   Optimized `/proc/self/mountinfo` parsing performance.
+*   Reduced unnecessary error log output, making Logcat cleaner.

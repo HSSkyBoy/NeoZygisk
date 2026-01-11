@@ -47,44 +47,17 @@ std::vector<mount_info> parse_mount_info(const char* pid) {
         mount_info info = {};
         std::string device_str;
 
-        // 1. Parse the fixed-format fields from the first part of the line.
+        // Parse the fixed-format fields from the first part of the line.
         p1_ss >> info.id >> info.parent >> device_str >> info.root >> info.target;
-        if (p1_ss.fail()) {
-            LOGE("malformed line (failed parsing first section): %s", line.c_str());
-            continue;
-        }
+        if (p1_ss.fail()) continue;
 
-        // 2. Parse the "major:minor" string.
-        // sscanf is ideal for this fixed format and returns the number of items matched.
         unsigned int maj = 0, min = 0;
-        if (sscanf(device_str.c_str(), "%u:%u", &maj, &min) != 2) {
-            LOGE("malformed line (invalid device format): %s", line.c_str());
-            continue;
-        }
-        info.device = makedev(maj, min);
-
-        // 3. The remainder of the first part is the vfs_options.
-        // We use getline to consume everything left in the stream.
-        std::string remaining_vfs;
-        std::getline(p1_ss, remaining_vfs);
-        if (!remaining_vfs.empty() && remaining_vfs.front() == ' ') {
-            info.vfs_options = remaining_vfs.substr(1);  // Trim leading space
+        if (sscanf(device_str.c_str(), "%u:%u", &maj, &min) == 2) {
+            info.device = makedev(maj, min);
         }
 
-        // 4. Parse the second part of the line.
         std::stringstream p2_ss(part2_str);
         p2_ss >> info.type >> info.source;
-        if (p2_ss.fail()) {
-            LOGE("malformed line (failed parsing type/source): %s", line.c_str());
-            continue;
-        }
-
-        // 5. The remainder of the second part is the fs_options.
-        std::string remaining_fs;
-        std::getline(p2_ss, remaining_fs);
-        if (!remaining_fs.empty() && remaining_fs.front() == ' ') {
-            info.fs_options = remaining_fs.substr(1);  // Trim leading space
-        }
 
         info.raw_info = line;
         result.push_back(std::move(info));
@@ -97,60 +70,60 @@ std::vector<mount_info> check_zygote_traces(uint32_t info_flags) {
 
     auto mount_infos = parse_mount_info("self");
     if (mount_infos.empty()) {
-        // This is not an error if the parsing simply found no mounts.
-        // It could be an error if parsing failed, which is logged in the function itself.
-        LOGV("mount info is empty or could not be parsed.");
         return traces;
     }
 
     const char* mount_source_name = nullptr;
-    bool is_kernelsu = false;
+    bool is_ksu_or_apatch = false;
 
     if (info_flags & PROCESS_ROOT_IS_APATCH) {
         mount_source_name = "APatch";
+        is_ksu_or_apatch = true;
     } else if (info_flags & PROCESS_ROOT_IS_KSU) {
         mount_source_name = "KSU";
-        is_kernelsu = true;
+        is_ksu_or_apatch = true;
     } else if (info_flags & PROCESS_ROOT_IS_MAGISK) {
         mount_source_name = "magisk";
     } else {
-        LOGE("could not determine root implementation, aborting unmount.");
         return traces;
     }
 
-    std::string kernel_su_module_source;
-    if (is_kernelsu) {
+    std::string ksu_module_source;
+
+    if (is_ksu_or_apatch) {
         for (const auto& info : mount_infos) {
             if (info.target == "/data/adb/modules" && starts_with(info.source, "/dev/block/loop")) {
-                kernel_su_module_source = info.source;
-                LOGV("detected KernelSU loop device module source: %s",
-                     kernel_su_module_source.c_str());
+                ksu_module_source = info.source;
+                LOGV("detected loop device source: %s", ksu_module_source.c_str());
                 break;
             }
         }
     }
 
     for (const auto& info : mount_infos) {
-        const bool should_unmount =
-            starts_with(info.root, "/adb/modules") ||
-            starts_with(info.target, "/data/adb/modules") || (info.source == mount_source_name) ||
-            (!kernel_su_module_source.empty() && info.source == kernel_su_module_source);
+        bool should_unmount = false;
+
+        if (starts_with(info.root, "/adb/modules") ||
+            starts_with(info.target, "/data/adb/modules")) {
+            should_unmount = true;
+        }
+        else if (mount_source_name && info.source == mount_source_name) {
+            should_unmount = true;
+        }
+        else if (!ksu_module_source.empty() && info.source == ksu_module_source) {
+            should_unmount = true;
+        }
 
         if (should_unmount) {
             traces.push_back(info);
         }
     }
 
-    if (traces.empty()) {
-        LOGV("no relevant mount points found to unmount.");
-        return traces;
+    if (!traces.empty()) {
+        std::sort(traces.begin(), traces.end(),
+                  [](const mount_info& a, const mount_info& b) { return a.id > b.id; });
+        LOGV("found %zu mounting traces in zygote.", traces.size());
     }
-
-    // Sort the collected traces by mount ID in descending order for safe unmounting
-    std::sort(traces.begin(), traces.end(),
-              [](const mount_info& a, const mount_info& b) { return a.id > b.id; });
-
-    LOGV("found %zu mounting traces in zygote.", traces.size());
 
     return traces;
 }

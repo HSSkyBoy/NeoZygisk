@@ -52,9 +52,13 @@ ssize_t xrecvmsg(int sockfd, struct msghdr* msg, int flags) {
 }
 
 void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
+    // Create a throwaway buffer.
+    // It must match the size Rust sends (sizeof(int) = 4 bytes).
+    int dummy_data;
+
     iovec iov = {
-        .iov_base = &cnt,
-        .iov_len = sizeof(cnt),
+        .iov_base = &dummy_data,
+        .iov_len = sizeof(dummy_data),
     };
     msghdr msg = {.msg_name = nullptr,
                   .msg_namelen = 0,
@@ -64,16 +68,42 @@ void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
                   .msg_controllen = bufsz,
                   .msg_flags = 0};
 
-    xrecvmsg(sockfd, &msg, MSG_WAITALL);
+    ssize_t rec = xrecvmsg(sockfd, &msg, MSG_WAITALL);
+
+    // --- IO Failed or Stream Desync ---
+    if (rec != sizeof(dummy_data)) {
+        PLOGE("recv_fds: IO failure. Read %zd bytes, expected %zu", rec, sizeof(dummy_data));
+    }
+
     cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
 
-    if (msg.msg_controllen != bufsz || cmsg == nullptr ||
-        // TODO: pass from rust: 20, expected: 16
-        // cmsg->cmsg_len != CMSG_LEN(sizeof(int) * cnt) ||
-        cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
+    // --- No headers received ---
+    if (cmsg == nullptr) {
+        LOGE("recv_fds: No control headers received. msg_controllen=%zu",
+             (size_t) msg.msg_controllen);
         return nullptr;
     }
 
+    // Check msg_controllen <= bufsz
+    if (msg.msg_controllen != bufsz) {
+        LOGW("recv_fds: Size mismatch. Buffer capacity: %zu, Received len: %zu", bufsz,
+             (size_t) msg.msg_controllen);
+    }
+
+    // Check Header Length Field
+    size_t expected_cmsg_len = CMSG_LEN(sizeof(int) * cnt);
+    if (cmsg->cmsg_len != expected_cmsg_len) {
+        LOGW("recv_fds: CMSG header len mismatch. Header says: %zu, Calculated: %zu (cnt=%d)",
+             (size_t) cmsg->cmsg_len, expected_cmsg_len, cnt);
+    }
+
+    // Check Protocol details
+    if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
+        LOGW("recv_fds: Protocol mismatch. Level: %d (exp %d), Type: %d (exp %d)", cmsg->cmsg_level,
+             SOL_SOCKET, cmsg->cmsg_type, SCM_RIGHTS);
+    }
+
+    // Return data anyway so we can see if the FD is valid
     return CMSG_DATA(cmsg);
 }
 

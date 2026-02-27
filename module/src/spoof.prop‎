@@ -1,0 +1,41 @@
+# --- Basic Bootloader Hiding ---
+ro.boot.vbmeta.device_state=locked
+ro.boot.verifiedbootstate=green
+ro.boot.flash.locked=1
+ro.boot.veritymode=enforcing
+ro.boot.warranty_bit=0
+ro.warranty_bit=0
+ro.debuggable=0
+ro.force.debuggable=0
+ro.secure=1
+ro.adb.secure=1
+ro.build.type=user
+ro.build.tags=release-keys
+ro.vendor.boot.warranty_bit=0
+ro.vendor.warranty_bit=0
+vendor.boot.vbmeta.device_state=locked
+vendor.boot.verifiedbootstate=green
+sys.oem_unlock_allowed=0
+
+# MIUI Specific
+ro.secureboot.lockstate=locked
+
+# Realme Specific
+ro.boot.realmebootstate=green
+ro.boot.realme.lockstate=1
+
+# OPlus Specific
+ro.is_ever_orange=0
+ro.boot.is_ever_orange=0
+ro.boot.hw.is_ever_orange=0
+
+# booted Hide
+ro.bootmode=unknown
+ro.boot.bootmode=unknown
+vendor.boot.bootmode=unknown
+
+# VBMeta Details
+ro.boot.vbmeta.invalidate_on_error=yes
+ro.boot.vbmeta.avb_version=1.2
+ro.boot.vbmeta.hash_alg=sha256
+ro.boot.vbmeta.size=4096

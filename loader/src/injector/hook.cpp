@@ -12,7 +12,6 @@
 #include <string>
 #include <vector>
 #include <fcntl.h>
-#include <unistd.h>
 
 #include <lsplt.hpp>
 
@@ -159,8 +158,8 @@ static ino_t g_art_inode = 0;
 static dev_t g_art_dev = 0;
 // -----------------------------------------------------------------
 
-#define DCL_HOOK_FUNC(ret, func, ...)                                                              \
-    ret (*old_##func)(__VA_ARGS__);                                                                \
+#define DCL_HOOK_FUNC(ret, func, ...)                                                      \
+    ret (*old_##func)(__VA_ARGS__);                                                        \
     ret new_##func(__VA_ARGS__)
 
 DCL_HOOK_FUNC(static char *, strdup, const char *str) {
@@ -226,7 +225,7 @@ DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *defau
 
             for (auto it = g_hook->plt_backup.rbegin(); it != g_hook->plt_backup.rend(); ++it) {
                 const auto &[dev, inode, sym, old_func] = *it;
-                if (*old_func == old_property_get) {
+                if (*old_func == reinterpret_cast<void*>(old_property_get)) {
                     if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
                         !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
                         PLOGE("unhook property_get");
@@ -344,7 +343,7 @@ void HookContext::register_hook(dev_t dev, ino_t inode, const char *symbol, void
     plt_backup.emplace_back(dev, inode, symbol, old_func);
 }
 
-#define PLT_HOOK_REGISTER_SYM(DEV, INODE, SYM, NAME)                                               \
+#define PLT_HOOK_REGISTER_SYM(DEV, INODE, SYM, NAME)                                       \
     register_hook(DEV, INODE, SYM, reinterpret_cast<void *>(new_##NAME),                           \
                   reinterpret_cast<void **>(&old_##NAME))
 
@@ -390,19 +389,18 @@ void HookContext::hook_plt() {
 }
 
 void HookContext::hook_unloader() {
-    ino_t art_inode = 0;
-    dev_t art_dev = 0;
-
     cached_map_infos = lsplt::MapInfo::Scan();
-    for (auto &map : cached_map_infos) {
-        if (map.path.ends_with("/libart.so")) {
-            art_inode = map.inode;
-            art_dev = map.dev;
-            break;
+    if (g_art_inode == 0 || g_art_dev == 0) {
+        for (auto &map : cached_map_infos) {
+            if (map.path.ends_with("/libart.so")) {
+                g_art_inode = map.inode;
+                g_art_dev = map.dev;
+                break;
+            }
         }
     }
 
-    PLT_HOOK_REGISTER(art_dev, art_inode, pthread_attr_setstacksize);
+    PLT_HOOK_REGISTER(g_art_dev, g_art_inode, pthread_attr_setstacksize);
     if (!lsplt::CommitHook(cached_map_infos)) {
         LOGE("HookContext::hook_unloader failed");
     }

@@ -26,15 +26,15 @@ val commitHash by extra(gitCommitHash)
 val minAPatchVersion by extra(10762)
 val minKsuVersion by extra(10940)
 val minKsudVersion by extra(11425)
-val maxKsuVersion by extra(30000)
+val maxKsuVersion by extra(50000)
 val minMagiskVersion by extra(26402)
 val workDirectory by extra("/data/adb/neozygisk")
-val updateJson by extra("https://raw.githubusercontent.com/JingMatrix/NeoZygisk/master/module/zygisk.json")
+val updateJson by extra("https://raw.githubusercontent.com/HSSkyBoy/NeoZygisk/master/module/zygisk.json")
 
 val androidMinSdkVersion by extra(26)
 val androidTargetSdkVersion by extra(36)
 val androidCompileSdkVersion by extra(36)
-val androidBuildToolsVersion by extra("36.0.0")
+val androidBuildToolsVersion by extra("36.1.0")
 // Don't update NDK unless after careful and detailed tests,
 // as explained in https://github.com/JingMatrix/NeoZygisk/pull/36
 val androidCompileNdkVersion by extra("27.2.12479018")

@@ -4,13 +4,21 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 #include <unwind.h>
+#include <fcntl.h>
+#include <atomic>
+#include <string>
+#include <fstream>
+#include <unordered_map>
+#include <vector>
 
 #include <lsplt.hpp>
 
 #include "android_util.hpp"
 #include "daemon.hpp"
+#include "logging.hpp"
 #include "module.hpp"
 #include "zygisk.hpp"
 
@@ -84,6 +92,38 @@ constexpr const char *kZygote = "com/android/internal/os/Zygote";
 ZygiskContext *g_ctx;
 HookContext *g_hook;
 
+static std::unordered_map<std::string, std::string> g_spoof_props;
+
+static void LoadPropConfig() {
+    std::ifstream file("/data/adb/modules/zygisksu/spoof.prop");
+    std::string line;
+    while (std::getline(file, line)) {
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        line.erase(line.find_last_not_of(" \t\r\n") + 1);
+        if (line.empty() || line[0] == '#') continue;
+
+        if (auto pos = line.find('='); pos != std::string::npos) {
+            g_spoof_props[line.substr(0, pos)] = line.substr(pos + 1);
+        }
+    }
+
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        uint8_t buf[32];
+        if (read(fd, buf, sizeof(buf)) == sizeof(buf)) {
+            char hex_str[65];
+            const char *hex_digits = "0123456789abcdef";
+            for (int i = 0; i < 32; ++i) {
+                hex_str[i * 2] = hex_digits[buf[i] >> 4];
+                hex_str[i * 2 + 1] = hex_digits[buf[i] & 0x0f];
+            }
+            hex_str[64] = '\0';
+            g_spoof_props["ro.boot.vbmeta.digest"] = hex_str;
+        }
+        close(fd);
+    }
+}
+
 // -----------------------------------------------------------------
 
 #define DCL_HOOK_FUNC(ret, func, ...)                                                              \
@@ -128,6 +168,16 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
 }
 
 DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *default_value) {
+    if (key && !g_spoof_props.empty()) {
+        auto it = g_spoof_props.find(key);
+        if (it != g_spoof_props.end()) {
+            if (value) {
+                strlcpy(value, it->second.c_str(), PROP_VALUE_MAX);
+            }
+            return it->second.length();
+        }
+    }
+
     static std::atomic<bool> unloader_triggered{false};
     
     bool expected = false;
@@ -419,6 +469,7 @@ void HookContext::restore_zygote_hook(JNIEnv *env) {
 // -----------------------------------------------------------------
 
 void hook_entry(void *start_addr, size_t block_size) {
+    LoadPropConfig();
     g_hook = new HookContext(start_addr, block_size);
     g_hook->hook_plt();
     clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0, true);

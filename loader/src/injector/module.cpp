@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <lsplt.hpp>
@@ -17,6 +18,24 @@
 #include "logging.hpp"
 #include "misc.hpp"
 #include "zygisk.hpp"
+
+// Structure for the getdents64 syscall
+struct linux_dirent64 {
+    uint64_t         d_ino;
+    int64_t          d_off;
+    unsigned short   d_reclen;
+    unsigned char    d_type;
+    char             d_name[];
+};
+
+// Extremely fast inline string-to-int parser (avoids atoi overhead)
+static inline int fast_atoi(const char* str) {
+    int val = 0;
+    while (*str >= '0' && *str <= '9') {
+        val = val * 10 + (*str++ - '0');
+    }
+    return val;
+}
 
 using namespace std;
 
@@ -163,8 +182,8 @@ void ZygiskContext::plt_hook_process_regex() {
             if (regexec(&reg.regex, map.path.data(), 0, nullptr, 0) != 0) continue;
             bool ignored = false;
             for (auto &ign : ignore_info) {
-                if (regexec(&ign.regex, map.path.data(), 0, nullptr, 0) != 0) continue;
-                if (ign.symbol.empty() || ign.symbol == reg.symbol) {
+                if (!ign.symbol.empty() && ign.symbol != reg.symbol) continue;
+                if (regexec(&ign.regex, map.path.data(), 0, nullptr, 0) == 0) {
                     ignored = true;
                     break;
                 }
@@ -227,15 +246,24 @@ void ZygiskContext::sanitize_fds() {
         }
     }
 
-    // Close all forbidden fds to prevent crashing
-    auto dir = open_dir("/proc/self/fd");
-    int dfd = dirfd(dir.get());
-    for (dirent *entry; (entry = readdir(dir.get()));) {
-        int fd = parse_int(entry->d_name);
-        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) &&
-            fd != dfd) {
-            close(fd);
+    // Close all forbidden fds using direct syscall
+    int fd_dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY);
+    if (fd_dir >= 0) {
+        char buf[4096];
+        int nread;
+        while ((nread = syscall(__NR_getdents64, fd_dir, buf, sizeof(buf))) > 0) {
+            for (int bpos = 0; bpos < nread;) {
+                auto d = reinterpret_cast<struct linux_dirent64*>(buf + bpos);
+                if (d->d_name[0] >= '0' && d->d_name[0] <= '9') {
+                    int fd = fast_atoi(d->d_name);
+                    if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) && fd != fd_dir) {
+                        close(fd);
+                    }
+                }
+                bpos += d->d_reclen;
+            }
         }
+        close(fd_dir);
     }
 }
 
@@ -266,18 +294,30 @@ void ZygiskContext::fork_pre() {
 
     if (!is_child()) return;
 
-    // Record all open fds
-    auto dir = xopen_dir("/proc/self/fd");
-    for (dirent *entry; (entry = readdir(dir.get()));) {
-        int fd = parse_int(entry->d_name);
-        if (fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size()) {
-            close(fd);
-            continue;
+    // Record all open fds using direct syscall to avoid heap allocations
+    int fd_dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY);
+    if (fd_dir >= 0) {
+        char buf[4096];
+        int nread;
+        while ((nread = syscall(__NR_getdents64, fd_dir, buf, sizeof(buf))) > 0) {
+            for (int bpos = 0; bpos < nread;) {
+                auto d = reinterpret_cast<struct linux_dirent64*>(buf + bpos);
+
+                // Only parse if it starts with a number (valid FD)
+                if (d->d_name[0] >= '0' && d->d_name[0] <= '9') {
+                    int fd = fast_atoi(d->d_name);
+                    if (fd >= 0 && static_cast<size_t>(fd) < allowed_fds.size()) {
+                        allowed_fds[fd] = true;
+                    } else if (fd != fd_dir) {
+                        close(fd);
+                    }
+                }
+                bpos += d->d_reclen;
+            }
         }
-        allowed_fds[fd] = true;
+        allowed_fds[fd_dir] = false;
+        close(fd_dir);
     }
-    // The dirfd will be closed once out of scope
-    allowed_fds[dirfd(dir.get())] = false;
 }
 
 void ZygiskContext::fork_post() {

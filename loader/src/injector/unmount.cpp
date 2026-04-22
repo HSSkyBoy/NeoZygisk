@@ -3,7 +3,6 @@
 
 #include <algorithm>  // For std::sort
 #include <cerrno>     // For errno
-#include <cstdio>     // For sscanf
 #include <cstring>    // For strerror
 #include <fstream>    // For std::ifstream
 #include <string>
@@ -13,6 +12,34 @@
 #include "logging.hpp"
 #include "module.hpp"
 #include "zygisk.hpp"
+
+// Extremely fast inline string-to-int parser (avoids sscanf overhead)
+static inline int fast_atoi(const char* str) {
+    int val = 0;
+    while (*str >= '0' && *str <= '9') {
+        val = val * 10 + (*str++ - '0');
+    }
+    return val;
+}
+
+// Fast parser for major:minor device format
+static inline bool parse_device(const char* str, unsigned int& maj, unsigned int& min) {
+    maj = 0;
+    min = 0;
+    
+    // Parse major
+    while (*str >= '0' && *str <= '9') {
+        maj = maj * 10 + (*str++ - '0');
+    }
+    if (*str != ':') return false;
+    str++;
+    
+    // Parse minor
+    while (*str >= '0' && *str <= '9') {
+        min = min * 10 + (*str++ - '0');
+    }
+    return true;
+}
 
 // Use string_view for more efficient prefix checking
 static bool starts_with(std::string_view str, std::string_view prefix) {
@@ -72,20 +99,13 @@ std::vector<mount_info> parse_mount_info(const char* pid) {
         info.target = get_next_token(part1);
         info.vfs_options = part1; // Remaining string is vfs_options
 
-        // Parse integers safely
-        if (sscanf(id_sv.data(), "%d", &info.id) != 1 ||
-            sscanf(parent_sv.data(), "%d", &info.parent) != 1) {
-            LOGE("malformed line (failed parsing id/parent): %s", line.c_str());
-            continue;
-        }
+        // Parse integers using fast_atoi (avoids sscanf overhead)
+        info.id = fast_atoi(id_sv.data());
+        info.parent = fast_atoi(parent_sv.data());
 
-        // 2. Parse the "major:minor" string.
+        // Parse the "major:minor" string using fast parser
         unsigned int maj = 0, min = 0;
-        // Need to ensure null termination for sscanf, but we know spaces follow
-        // or we can use string for parsing if needed. 
-        // Here we extract a temporary string for sscanf to be safe
-        std::string device_str(device_sv);
-        if (sscanf(device_str.c_str(), "%u:%u", &maj, &min) != 2) {
+        if (!parse_device(device_sv.data(), maj, min)) {
             LOGE("malformed line (invalid device format): %s", line.c_str());
             continue;
         }

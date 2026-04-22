@@ -3,19 +3,48 @@
 
 #include <algorithm>  // For std::sort
 #include <cerrno>     // For errno
-#include <cstdio>     // For sscanf
 #include <cstring>    // For strerror
 #include <fstream>    // For std::ifstream
 #include <sstream>    // For std::stringstream
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "logging.hpp"
 #include "module.hpp"
 #include "zygisk.hpp"
 
-static bool starts_with(const std::string& str, const std::string& prefix) {
-    return str.rfind(prefix, 0) == 0;
+// Extremely fast inline string-to-int parser (avoids sscanf overhead)
+static inline int fast_atoi(const char* str) {
+    int val = 0;
+    while (*str >= '0' && *str <= '9') {
+        val = val * 10 + (*str++ - '0');
+    }
+    return val;
+}
+
+// Fast parser for major:minor device format
+static inline bool parse_device(const char* str, unsigned int& maj, unsigned int& min) {
+    maj = 0;
+    min = 0;
+    
+    // Parse major
+    while (*str >= '0' && *str <= '9') {
+        maj = maj * 10 + (*str++ - '0');
+    }
+    if (*str != ':') return false;
+    str++;
+    
+    // Parse minor
+    while (*str >= '0' && *str <= '9') {
+        min = min * 10 + (*str++ - '0');
+    }
+    return true;
+}
+
+// Use string_view for more efficient prefix checking
+static bool starts_with(std::string_view str, std::string_view prefix) {
+    return str.length() >= prefix.length() && str.compare(0, prefix.length(), prefix) == 0;
 }
 
 std::vector<mount_info> parse_mount_info(const char* pid) {
@@ -54,10 +83,9 @@ std::vector<mount_info> parse_mount_info(const char* pid) {
             continue;
         }
 
-        // 2. Parse the "major:minor" string.
-        // sscanf is ideal for this fixed format and returns the number of items matched.
+        // 2. Parse the "major:minor" string using fast parser.
         unsigned int maj = 0, min = 0;
-        if (sscanf(device_str.c_str(), "%u:%u", &maj, &min) != 2) {
+        if (!parse_device(device_str.c_str(), maj, min)) {
             LOGE("malformed line (invalid device format): %s", line.c_str());
             continue;
         }

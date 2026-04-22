@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <atomic>
 #include <string>
-#include <fstream>
 #include <unordered_map>
 #include <vector>
 
@@ -95,32 +94,51 @@ HookContext *g_hook;
 static std::unordered_map<std::string, std::string> g_spoof_props;
 
 static void LoadPropConfig() {
-    std::ifstream file("/data/adb/modules/zygisksu/spoof.prop");
-    std::string line;
-    while (std::getline(file, line)) {
-        line.erase(0, line.find_first_not_of(" \t\r\n"));
-        line.erase(line.find_last_not_of(" \t\r\n") + 1);
-        if (line.empty() || line[0] == '#') continue;
+    int fd = open("/data/adb/modules/zygisksu/spoof.prop", O_RDONLY);
+    if (fd < 0) return;
 
-        if (auto pos = line.find('='); pos != std::string::npos) {
-            g_spoof_props[line.substr(0, pos)] = line.substr(pos + 1);
+    char buf[4096];
+    std::string content;
+    ssize_t nread;
+    while ((nread = read(fd, buf, sizeof(buf))) > 0) {
+        content.append(buf, nread);
+    }
+    close(fd);
+
+    size_t pos = 0;
+    while (pos < content.size()) {
+        size_t eol = content.find('\n', pos);
+        if (eol == std::string::npos) eol = content.size();
+
+        // Trim leading whitespace
+        const char *start = content.data() + pos;
+        const char *end = content.data() + eol;
+        while (start < end && (*start == ' ' || *start == '\t' || *start == '\r')) start++;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+
+        std::string_view line(start, end - start);
+        if (!line.empty() && line[0] != '#') {
+            if (auto eq = line.find('='); eq != std::string_view::npos) {
+                g_spoof_props[std::string(line.substr(0, eq))] = std::string(line.substr(eq + 1));
+            }
         }
+        pos = eol + 1;
     }
 
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        uint8_t buf[32];
-        if (read(fd, buf, sizeof(buf)) == sizeof(buf)) {
+    int urandom_fd = open("/dev/urandom", O_RDONLY);
+    if (urandom_fd >= 0) {
+        uint8_t rand_buf[32];
+        if (read(urandom_fd, rand_buf, sizeof(rand_buf)) == sizeof(rand_buf)) {
             char hex_str[65];
             const char *hex_digits = "0123456789abcdef";
             for (int i = 0; i < 32; ++i) {
-                hex_str[i * 2] = hex_digits[buf[i] >> 4];
-                hex_str[i * 2 + 1] = hex_digits[buf[i] & 0x0f];
+                hex_str[i * 2] = hex_digits[rand_buf[i] >> 4];
+                hex_str[i * 2 + 1] = hex_digits[rand_buf[i] & 0x0f];
             }
             hex_str[64] = '\0';
             g_spoof_props["ro.boot.vbmeta.digest"] = hex_str;
         }
-        close(fd);
+        close(urandom_fd);
     }
 }
 
@@ -324,6 +342,7 @@ void HookContext::hook_plt() {
         if (map.path.ends_with("/libandroid_runtime.so")) {
             android_runtime_inode = map.inode;
             android_runtime_dev = map.dev;
+            break;
         }
     }
 

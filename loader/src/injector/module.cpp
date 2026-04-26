@@ -430,6 +430,7 @@ void ZygiskContext::nativeSpecializeAppProcess_pre() {
 
 void ZygiskContext::nativeSpecializeAppProcess_post() {
     LOGV("post specialize [%s]", process);
+    zygiskd::UnmapSharedMemory();
     app_specialize_post();
 }
 
@@ -462,6 +463,7 @@ void ZygiskContext::nativeForkSystemServer_pre() {
 void ZygiskContext::nativeForkSystemServer_post() {
     if (is_child()) {
         LOGV("post forkSystemServer");
+        zygiskd::UnmapSharedMemory();
         server_specialize_post();
     }
     fork_post();
@@ -525,6 +527,7 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 void ZygiskContext::nativeForkAndSpecialize_post() {
     if (is_child()) {
         LOGV("post forkAndSpecialize [%s]", process);
+        zygiskd::UnmapSharedMemory();
         app_specialize_post();
     }
     fork_post();

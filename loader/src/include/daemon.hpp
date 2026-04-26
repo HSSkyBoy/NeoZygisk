@@ -65,6 +65,7 @@ enum class SocketAction {
     GetModuleDir,
     ZygoteRestart,
     SystemServerStarted,
+    GetSharedMemoryFd,
 };
 
 enum class MountNamespace { Clean, Root };
@@ -92,4 +93,8 @@ int GetModuleDir(size_t index);
 void ZygoteRestart();
 
 void SystemServerStarted();
+
+int GetSharedMemoryFd();
+
+void UnmapSharedMemory();
 }  // namespace zygiskd

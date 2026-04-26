@@ -1,18 +1,47 @@
 #include "daemon.hpp"
 
 #include <linux/un.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <atomic>
+#include <climits>
 
 #include "logging.hpp"
 #include "socket_utils.hpp"
 
+// Forward declaration of the shared memory layout since we cannot include the
+// Rust-side constants header directly here.
+namespace constants {
+constexpr size_t SHM_HASH_MAP_SIZE = 8192;
+
+struct ShmEntry {
+    std::atomic<uint32_t> uid;
+    std::atomic<uint32_t> flags;
+};
+
+struct ShmLayout {
+    std::atomic<uint32_t> version;
+    ShmEntry entries[SHM_HASH_MAP_SIZE];
+};
+}  // namespace constants
+
 namespace zygiskd {
 static std::string TMP_PATH;
+static constants::ShmLayout *g_shm_base = nullptr;
+static bool g_shm_init_attempted = false;
 
 void Init(const char *path) {
     TMP_PATH = path;
     setenv("TMP_PATH", TMP_PATH.data(), 0);
+}
+
+void UnmapSharedMemory() {
+    if (g_shm_base) {
+        munmap(g_shm_base, sizeof(constants::ShmLayout));
+        g_shm_base = nullptr;
+    }
 }
 
 std::string GetTmpPath() { return TMP_PATH; }
@@ -51,6 +80,54 @@ bool PingHeartbeat() {
 }
 
 uint32_t GetProcessFlags(uid_t uid) {
+    if (!g_shm_init_attempted) {
+        g_shm_init_attempted = true;
+        UniqueFd shm_fd = UniqueFd(GetSharedMemoryFd());
+        if (shm_fd >= 0) {
+            void *mapped = mmap(nullptr, sizeof(constants::ShmLayout), PROT_READ, MAP_SHARED,
+                                shm_fd, 0);
+            if (mapped != MAP_FAILED) {
+                g_shm_base = static_cast<constants::ShmLayout *>(mapped);
+                LOGV("zygiskd: mapped shared memory cache for ProcessFlags");
+            } else {
+                PLOGE("mmap shared memory cache");
+            }
+        }
+    }
+
+    if (g_shm_base) {
+        uint32_t version_before = g_shm_base->version.load(std::memory_order_acquire);
+        if ((version_before & 1U) == 0) {
+            const size_t mask = constants::SHM_HASH_MAP_SIZE - 1;
+            size_t index = static_cast<size_t>(uid) & mask;
+            const size_t start = index;
+            bool found = false;
+            uint32_t cached_flags = 0;
+
+            do {
+                const uint32_t current_uid =
+                    g_shm_base->entries[index].uid.load(std::memory_order_relaxed);
+                if (current_uid == static_cast<uint32_t>(uid)) {
+                    cached_flags =
+                        g_shm_base->entries[index].flags.load(std::memory_order_relaxed);
+                    found = true;
+                    break;
+                }
+                if (current_uid == UINT32_MAX) {
+                    break;
+                }
+                index = (index + 1) & mask;
+            } while (index != start);
+
+            if (found) {
+                uint32_t version_after = g_shm_base->version.load(std::memory_order_acquire);
+                if (version_before == version_after) {
+                    return cached_flags;
+                }
+            }
+        }
+    }
+
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         PLOGE("GetProcessFlags");
@@ -165,5 +242,26 @@ void SystemServerStarted() {
             PLOGE("report system server started");
         }
     }
+}
+
+int GetSharedMemoryFd() {
+    UniqueFd fd = Connect(1);
+    if (fd == -1) {
+        PLOGE("GetSharedMemoryFd");
+        return -1;
+    }
+    socket_utils::write_u8(fd, (uint8_t) SocketAction::GetSharedMemoryFd);
+
+    const uint8_t status = socket_utils::read_u8(fd);
+    if (status == 0) {
+        return -1;
+    }
+
+    const int shm_fd = socket_utils::recv_fd(fd);
+    if (shm_fd < 0) {
+        PLOGE("GetSharedMemoryFd: recv_fd");
+        return -1;
+    }
+    return shm_fd;
 }
 }  // namespace zygiskd

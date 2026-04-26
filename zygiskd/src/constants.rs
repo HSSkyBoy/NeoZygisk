@@ -7,6 +7,7 @@ use konst::primitive::parse_i32;
 use konst::unwrap_ctx;
 use log::LevelFilter;
 use num_enum::TryFromPrimitive;
+use std::sync::atomic::AtomicU32;
 
 // --- Versioning Constants ---
 // These are set at compile time from environment variables.
@@ -58,6 +59,7 @@ pub enum DaemonSocketAction {
     GetModuleDir,
     ZygoteRestart,
     SystemServerStarted,
+    GetSharedMemoryFd,
 }
 
 bitflags! {
@@ -76,4 +78,18 @@ bitflags! {
         /// The active root solution is Magisk.
         const PROCESS_ROOT_IS_MAGISK = 1 << 30;
     }
+}
+// --- Shared Memory ---
+pub const SHM_HASH_MAP_SIZE: usize = 8192; // Must remain a power of two for hashing
+
+#[repr(C)]
+pub struct ShmEntry {
+    pub uid: AtomicU32,
+    pub flags: AtomicU32,
+}
+
+#[repr(C)]
+pub struct ShmLayout {
+    pub version: AtomicU32,
+    pub entries: [ShmEntry; SHM_HASH_MAP_SIZE],
 }

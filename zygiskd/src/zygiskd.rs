@@ -9,24 +9,24 @@
 //! - Handling requests such as providing module libraries, querying process flags,
 //!   and managing companion processes.
 
-use crate::constants::{DaemonSocketAction, ProcessFlags, ZKSU_VERSION};
+use crate::constants::{self, DaemonSocketAction, ProcessFlags, ZKSU_VERSION};
 use crate::mount::{MountNamespace, MountNamespaceManager};
 use crate::utils::{self, UnixStreamExt};
-use crate::{constants, lp_select, root_impl};
+use crate::{lp_select, root_impl};
 use anyhow::{Context as AnyhowContext, Result, bail};
 use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
 use rustix::io::{FdFlags, fcntl_setfd};
 use std::fs;
 use std::io::Error;
-use std::os::fd::AsRawFd;
-use std::os::fd::{AsFd, OwnedFd, RawFd};
+use std::mem::size_of;
+use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
     process::Command,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{atomic::Ordering, Arc, Mutex, OnceLock},
     thread,
 };
 
@@ -48,6 +48,31 @@ struct AppContext {
 static TMP_PATH: OnceLock<String> = OnceLock::new();
 static CONTROLLER_SOCKET: OnceLock<String> = OnceLock::new();
 static DAEMON_SOCKET_PATH: OnceLock<String> = OnceLock::new();
+static SHARED_MEMORY: OnceLock<SharedShm> = OnceLock::new();
+
+struct SharedShm {
+    fd: OwnedFd,
+    layout: *mut constants::ShmLayout,
+    len: usize,
+    write_lock: Mutex<()>,
+}
+
+unsafe impl Send for SharedShm {}
+unsafe impl Sync for SharedShm {}
+
+impl SharedShm {
+    fn layout_mut(&self) -> &mut constants::ShmLayout {
+        unsafe { &mut *self.layout }
+    }
+}
+
+impl Drop for SharedShm {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.layout as *mut _, self.len);
+        }
+    }
+}
 
 /// The main function for the zygiskd daemon.
 pub fn main() -> Result<()> {
@@ -143,6 +168,7 @@ fn handle_threaded_action(
             handle_request_companion_socket(&mut stream, context)
         }
         DaemonSocketAction::GetModuleDir => handle_get_module_dir(&mut stream, context),
+        DaemonSocketAction::GetSharedMemoryFd => handle_get_shared_memory_fd(&mut stream),
         // Other cases are handled synchronously and won't reach here.
         _ => unreachable!(),
     }
@@ -163,6 +189,7 @@ fn initialize_globals() -> Result<()> {
             lp_select!("/cp32.sock", "/cp64.sock")
         ))
         .unwrap();
+    initialize_shared_memory()?;
     Ok(())
 }
 
@@ -373,6 +400,9 @@ fn handle_get_process_flags(stream: &mut UnixStream) -> Result<()> {
 
     trace!("Flags for UID {}: {:?}", uid, flags);
     stream.write_u32(flags.bits())?;
+    if uid >= 0 {
+        cache_process_flags(uid as u32, flags.bits());
+    }
     Ok(())
 }
 
@@ -461,4 +491,115 @@ fn handle_get_module_dir(stream: &mut UnixStream, context: &AppContext) -> Resul
     let dir = fs::File::open(dir_path)?;
     stream.send_fd(dir.as_raw_fd())?;
     Ok(())
+}
+
+fn handle_get_shared_memory_fd(stream: &mut UnixStream) -> Result<()> {
+    if let Some(shm) = SHARED_MEMORY.get() {
+        stream.write_u8(1)?;
+        stream.send_fd(shm.fd.as_raw_fd())?;
+    } else {
+        stream.write_u8(0)?;
+    }
+    Ok(())
+}
+
+fn initialize_shared_memory() -> Result<()> {
+    let size = size_of::<constants::ShmLayout>();
+    let memfd = memfd::MemfdOptions::default()
+        .allow_sealing(true)
+        .create("zygisk-shm")?;
+
+    {
+        let file = memfd.as_file();
+        file.set_len(size as u64)?;
+    }
+
+    let mut seals = memfd::SealsHashSet::new();
+    seals.insert(memfd::FileSeal::SealShrink);
+    seals.insert(memfd::FileSeal::SealGrow);
+    seals.insert(memfd::FileSeal::SealSeal);
+    if let Err(e) = memfd.add_seals(&seals) {
+        warn!("Failed to add seals to shared memory memfd: {}", e);
+    }
+
+    let owned_fd = OwnedFd::from(memfd.into_file());
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            owned_fd.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        bail!(
+            "mmap shared memory failed: {}",
+            Error::last_os_error()
+        );
+    }
+
+    let layout = unsafe { &mut *(ptr as *mut constants::ShmLayout) };
+    layout.version.store(0, Ordering::Relaxed);
+    for entry in layout.entries.iter_mut() {
+        entry.uid.store(u32::MAX, Ordering::Relaxed);
+        entry.flags.store(0, Ordering::Relaxed);
+    }
+
+    SHARED_MEMORY
+        .set(SharedShm {
+            fd: owned_fd,
+            layout: ptr as *mut _,
+            len: size,
+            write_lock: Mutex::new(()),
+        })
+        .map_err(|_| {
+            unsafe {
+                libc::munmap(ptr, size);
+            }
+            anyhow::anyhow!("Shared memory already initialized")
+        })?;
+
+    Ok(())
+}
+
+fn cache_process_flags(uid: u32, flags: u32) {
+    if let Some(shm) = SHARED_MEMORY.get() {
+        let _guard = shm.write_lock.lock().unwrap();
+        let layout = shm.layout_mut();
+        let base_version = layout.version.load(Ordering::Relaxed);
+        layout
+            .version
+            .store(base_version.wrapping_add(1), Ordering::Release);
+
+        let mask = constants::SHM_HASH_MAP_SIZE - 1;
+        let mut index = (uid as usize) & mask;
+        let start_index = index;
+        let mut inserted = false;
+
+        loop {
+            let entry = &layout.entries[index];
+            let current_uid = entry.uid.load(Ordering::Relaxed);
+            if current_uid == u32::MAX || current_uid == uid {
+                entry.uid.store(uid, Ordering::Relaxed);
+                entry.flags.store(flags, Ordering::Relaxed);
+                inserted = true;
+                break;
+            }
+
+            index = (index + 1) & mask;
+            if index == start_index {
+                break;
+            }
+        }
+
+        if !inserted {
+            warn!("Shared memory cache is full; could not cache uid {}", uid);
+        }
+
+        layout
+            .version
+            .store(base_version.wrapping_add(2), Ordering::Release);
+    }
 }

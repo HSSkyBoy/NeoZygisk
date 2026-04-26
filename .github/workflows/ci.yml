@@ -68,6 +68,8 @@ jobs:
           RELEASE_NAME=$(basename "$RELEASE_ZIP" .zip)
           DEBUG_NAME=$(basename "$DEBUG_ZIP" .zip)
 
+          echo "RELEASE_ZIP=${RELEASE_ZIP}" >> $GITHUB_OUTPUT
+          echo "DEBUG_ZIP=${DEBUG_ZIP}" >> $GITHUB_OUTPUT
           echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_OUTPUT
           echo "DEBUG_NAME=${DEBUG_NAME}" >> $GITHUB_OUTPUT
 
@@ -97,3 +99,68 @@ jobs:
         with:
           name: debug-symbols
           path: zygiskd/build/symbols/debug/
+
+      - name: Publish artifacts to Telegram
+        if: success() && github.event_name != 'pull_request'
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+          RELEASE_ZIP: ${{ steps.prepare_artifacts.outputs.RELEASE_ZIP }}
+          TITLE: NyaZygisk
+          VERSION: ${{ github.run_number }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "::warning::Telegram secrets not configured, skipping upload"
+            exit 0
+          fi
+
+          if [ ! -f "$RELEASE_ZIP" ]; then
+            echo "::error::Release ZIP not found: $RELEASE_ZIP"
+            exit 1
+          fi
+
+          COMMIT_MESSAGE=$(git log -1 --pretty=%B 2>/dev/null || echo "No commit message")
+
+          # HTML 特殊字元跳脫
+          escape_html() {
+            sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+          }
+          SAFE_TITLE=$(printf '%s' "$TITLE" | escape_html)
+          SAFE_BRANCH=$(printf '%s' "$BRANCH" | escape_html)
+          SAFE_MESSAGE=$(printf '%s' "$COMMIT_MESSAGE" | escape_html)
+
+          NL=$'\n'
+          CAPTION="<b>${SAFE_TITLE}</b>${NL}"
+          CAPTION+="Branch: ${SAFE_BRANCH}${NL}"
+          CAPTION+="#ci_${VERSION}${NL}${NL}"
+          CAPTION+="${SAFE_MESSAGE}${NL}${NL}"
+          CAPTION+="<a href=\"${COMMIT_URL}\">Commit</a>${NL}"
+          CAPTION+="<a href=\"${RUN_URL}\">Workflow run</a>"
+
+          if [ ${#CAPTION} -gt 1024 ]; then
+            echo "::warning::Caption exceeds 1024 chars, falling back to commit URL"
+            CAPTION="${COMMIT_URL}"
+          fi
+
+          CURL_ARGS=(
+            --silent --show-error --fail
+            --request POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument"
+            --form "chat_id=${TG_CHAT_ID}"
+            --form "document=@${RELEASE_ZIP}"
+            --form "parse_mode=HTML"
+            --form-string "caption=${CAPTION}"
+          )
+
+          if [ -n "${TG_THREAD_ID:-}" ]; then
+            CURL_ARGS+=(--form "message_thread_id=${TG_THREAD_ID}")
+          fi
+
+          echo "Uploading $(basename "$RELEASE_ZIP") to Telegram..."
+          curl "${CURL_ARGS[@]}" >/dev/null
+          echo "Upload completed."

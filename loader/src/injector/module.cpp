@@ -386,7 +386,13 @@ void ZygiskContext::app_specialize_pre() {
         }
     }
 
-    bool skip_zygiskd = is_isolated_aid && zygiskd::Connect(1) == -1;
+    bool skip_zygiskd = false;
+    if (is_isolated_aid) {
+        UniqueFd fd = zygiskd::Connect(1);
+        if (fd == -1) {
+            skip_zygiskd = true;
+        }
+    }
 
     if (!skip_zygiskd && info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
 

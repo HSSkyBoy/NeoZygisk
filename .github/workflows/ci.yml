@@ -139,7 +139,7 @@ jobs:
           CAPTION="<b>${SAFE_TITLE}</b>${NL}"
           CAPTION+="Branch: ${SAFE_BRANCH}${NL}"
           CAPTION+="#ci_${VERSION}${NL}${NL}"
-          CAPTION+="${SAFE_MESSAGE}${NL}${NL}"
+          CAPTION+="<blockquote>${SAFE_MESSAGE}</blockquote>${NL}${NL}"
           CAPTION+="<a href=\"${COMMIT_URL}\">Commit</a>${NL}"
           CAPTION+="<a href=\"${RUN_URL}\">Workflow run</a>"
 

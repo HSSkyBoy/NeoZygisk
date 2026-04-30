@@ -188,6 +188,11 @@ fas_samsung_p = ForkAndSpec('samsung_p', [uid, gid, gids, runtime_flags, rlimits
     se_info, Anon(jint), Anon(jint), nice_name, fds_to_close, fds_to_ignore, is_child_zygote,
     instruction_set, app_data_dir])
 
+fas_samsung_b = ForkAndSpec('samsung_b', [uid, gid, gids, runtime_flags, rlimits, mount_external,
+    se_info, nice_name, fds_to_close, fds_to_ignore, is_child_zygote, instruction_set, app_data_dir,
+    Anon(jboolean), is_top_app, pkg_data_info_list, whitelisted_data_info_list,
+    mount_data_dirs, mount_storage_dirs, mount_sysprop_overrides])
+
 fas_grapheneos_u = ForkAndSpec('grapheneos_u', [uid, gid, gids, runtime_flags, rlimits, mount_external,
     se_info, nice_name, fds_to_close, fds_to_ignore, is_child_zygote, instruction_set, app_data_dir,
     is_top_app, pkg_data_info_list, whitelisted_data_info_list, mount_data_dirs, mount_storage_dirs,
@@ -243,7 +248,7 @@ with open('jni_hooks.hpp', 'w') as f:
 
     f.write(gen_jni_def('zygote', [
         fas_l, fas_o, fas_p, fas_q_alt, fas_r, fas_u, fas_samsung_m, fas_samsung_n, fas_samsung_o,
-        fas_samsung_p, fas_grapheneos_u, spec_q, spec_q_alt, spec_r, spec_u, spec_samsung_q,
+        fas_samsung_p, fas_samsung_b, fas_grapheneos_u, spec_q, spec_q_alt, spec_r, spec_u, spec_samsung_q,
         spec_grapheneos_u, server_l, server_samsung_q]))
 
     f.write('\n')
